@@ -5,12 +5,12 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from PyPDF2 import PdfReader
 from PyPDF2._reader import convert_to_int, convertToInt
 from PyPDF2.constants import ImageAttributes as IA
 from PyPDF2.constants import PageAttributes as PG
-from PyPDF2.constants import Ressources as RES
 from PyPDF2.errors import (
     EmptyFileError,
     FileNotDecryptedError,
@@ -18,7 +18,6 @@ from PyPDF2.errors import (
     PdfReadWarning,
     WrongPasswordError,
 )
-from PyPDF2.filters import _xobj_to_image
 from PyPDF2.generic import Destination
 
 from . import get_pdf_from_url, normalize_warnings
@@ -96,8 +95,25 @@ def test_read_metadata(pdf_path, expected):
         docinfo.producer_raw
         docinfo.subject
         docinfo.subject_raw
+        docinfo.creation_date
+        docinfo.creation_date_raw
+        docinfo.modification_date
+        docinfo.modification_date_raw
         if "/Title" in metadict:
             assert metadict["/Title"] == docinfo.title
+
+
+@pytest.mark.parametrize(
+    "pdf_path", [EXTERNAL_ROOT / "017-unreadable-meta-data/unreadablemetadata.pdf"]
+)
+def test_broken_meta_data(pdf_path):
+    with open(pdf_path, "rb") as f:
+        reader = PdfReader(f)
+        with pytest.raises(
+            PdfReadError,
+            match=r"trailer not found or does not point to document information directory",
+        ):
+            reader.metadata
 
 
 @pytest.mark.parametrize(
@@ -153,19 +169,27 @@ def test_get_outline(src, outline_elements):
 
 
 @pytest.mark.parametrize(
-    ("src", "nb_images"),
+    ("src", "expected_images"),
     [
-        ("pdflatex-outline.pdf", 0),
-        ("crazyones.pdf", 0),
-        ("git.pdf", 1),
-        ("imagemagick-lzw.pdf", 1),
-        ("imagemagick-ASCII85Decode.pdf", 1),
-        ("imagemagick-CCITTFaxDecode.pdf", 1),
+        ("pdflatex-outline.pdf", []),
+        ("crazyones.pdf", []),
+        ("git.pdf", ["Image9.png"]),
+        pytest.param(
+            "imagemagick-lzw.pdf",
+            ["Im0.png"],
+            marks=pytest.mark.xfail(reason="broken image extraction"),
+        ),
+        pytest.param(
+            "imagemagick-ASCII85Decode.pdf",
+            ["Im0.png"],
+            marks=pytest.mark.xfail(reason="broken image extraction"),
+        ),
+        ("imagemagick-CCITTFaxDecode.pdf", ["Im0.tiff"]),
     ],
 )
-def test_get_images(src, nb_images):
-    src = RESOURCE_ROOT / src
-    reader = PdfReader(src)
+def test_get_images(src, expected_images):
+    src_abs = RESOURCE_ROOT / src
+    reader = PdfReader(src_abs)
 
     with pytest.raises(TypeError):
         page = reader.pages["0"]
@@ -173,25 +197,16 @@ def test_get_images(src, nb_images):
     page = reader.pages[-1]
     page = reader.pages[0]
 
-    images_extracted = []
-
-    if RES.XOBJECT in page[PG.RESOURCES]:
-        x_object = page[PG.RESOURCES][RES.XOBJECT].get_object()
-
-        for obj in x_object:
-            if x_object[obj][IA.SUBTYPE] == "/Image":
-                extension, byte_stream = _xobj_to_image(x_object[obj])
-                if extension is not None:
-                    filename = obj[1:] + ".png"
-                    with open(filename, "wb") as img:
-                        img.write(byte_stream)
-                    images_extracted.append(filename)
-
-    assert len(images_extracted) == nb_images
-
-    # Cleanup
-    for filepath in images_extracted:
-        os.remove(filepath)
+    images_extracted = page.images
+    assert len(images_extracted) == len(expected_images)
+    for image, expected_image in zip(images_extracted, expected_images):
+        assert image.name == expected_image
+        with open(f"test-out-{src}-{image.name}", "wb") as fp:
+            fp.write(image.data)
+        assert (
+            image.name.split(".")[-1].upper()
+            == Image.open(io.BytesIO(image.data)).format
+        )
 
 
 @pytest.mark.parametrize(
@@ -1094,3 +1109,40 @@ def test_wrong_password_error():
 def test_get_page_number_by_indirect():
     reader = PdfReader(RESOURCE_ROOT / "crazyones.pdf")
     reader._get_page_number_by_indirect(1)
+
+
+def test_corrupted_xref_table():
+    # issue #1292
+    url = "https://github.com/py-pdf/PyPDF2/files/9444747/BreezeManual.orig.pdf"
+    name = "BreezeMan1.pdf"
+    reader = PdfReader(BytesIO(get_pdf_from_url(url, name=name)))
+    reader.pages[0].extract_text()
+    url = "https://github.com/py-pdf/PyPDF2/files/9444748/BreezeManual.failed.pdf"
+    name = "BreezeMan2.pdf"
+    reader = PdfReader(BytesIO(get_pdf_from_url(url, name=name)))
+    reader.pages[0].extract_text()
+
+
+def test_reader(caplog):
+    # iss #1273
+    url = "https://github.com/py-pdf/PyPDF2/files/9464742/shiv_resume.pdf"
+    name = "shiv_resume.pdf"
+    reader = PdfReader(BytesIO(get_pdf_from_url(url, name=name)))
+    assert "Previous trailer can not be read" in caplog.text
+    caplog.clear()
+    # first call requires some reparations...
+    reader.pages[0].extract_text()
+    assert "repaired" in caplog.text
+    assert "found" in caplog.text
+    caplog.clear()
+    # ...and now no more required
+    reader.pages[0].extract_text()
+    assert caplog.text == ""
+
+
+def test_zeroing_xref():
+    # iss #328
+    url = "https://github.com/py-pdf/PyPDF2/files/9066120/UTA_OSHA_3115_Fall_Protection_Training_09162021_.pdf"
+    name = "UTA_OSHA.pdf"
+    reader = PdfReader(BytesIO(get_pdf_from_url(url, name=name)))
+    len(reader.pages)

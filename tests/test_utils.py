@@ -5,8 +5,11 @@ from pathlib import Path
 import pytest
 
 import PyPDF2._utils
+from PyPDF2 import PdfReader
 from PyPDF2._utils import (
+    File,
     _get_max_pdf_version_header,
+    _human_readable_bytes,
     deprecate_bookmark,
     mark_location,
     matrix_multiply,
@@ -18,6 +21,8 @@ from PyPDF2._utils import (
     skip_over_whitespace,
 )
 from PyPDF2.errors import PdfReadError, PdfStreamError
+
+from . import get_pdf_from_url
 
 TESTS_ROOT = Path(__file__).parent.resolve()
 PROJECT_ROOT = TESTS_ROOT.parent
@@ -104,10 +109,10 @@ def test_b():
 
 
 def test_deprecate_no_replacement():
-    with pytest.raises(PendingDeprecationWarning) as exc:
+    with pytest.warns(PendingDeprecationWarning) as warn:
         PyPDF2._utils.deprecate_no_replacement("foo")
     error_msg = "foo is deprecated and will be removed in PyPDF2 3.0.0."
-    assert exc.value.args[0] == error_msg
+    assert warn[0].message.args[0] == error_msg
 
 
 @pytest.mark.parametrize(
@@ -243,3 +248,34 @@ def test_deprecate_bookmark():
         "old_param is deprecated. Use new_param instead."
     )
     assert exc.value.args[0] == expected_msg
+
+
+def test_escapedcode_followed_by_int():
+    # iss #1294
+    url = "https://github.com/timedegree/playground_files/raw/main/%E8%AE%BA%E6%96%87/AN%20EXACT%20ANALYTICAL%20SOLUTION%20OF%20KEPLER'S%20EQUATION.pdf"
+    name = "keppler.pdf"
+
+    reader = PdfReader(io.BytesIO(get_pdf_from_url(url, name=name)))
+    for page in reader.pages:
+        page.extract_text()
+
+
+@pytest.mark.parametrize(
+    ("input_int", "expected_output"),
+    [
+        (123, "123 Byte"),
+        (1234, "1.2 kB"),
+        (123_456, "123.5 kB"),
+        (1_234_567, "1.2 MB"),
+        (1_234_567_890, "1.2 GB"),
+        (1_234_567_890_000, "1234.6 GB"),
+    ],
+)
+def test_human_readable_bytes(input_int, expected_output):
+    assert _human_readable_bytes(input_int) == expected_output
+
+
+def test_file():
+    f = File(name="image.png", data=b"")
+    assert str(f) == "File(name=image.png, data: 0 Byte)"
+    assert repr(f) == "File(name=image.png, data: 0 Byte, hash: 0)"

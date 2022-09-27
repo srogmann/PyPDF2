@@ -370,9 +370,15 @@ def test_fill_form():
     page = reader.pages[0]
 
     writer.add_page(page)
+    writer.add_page(PdfReader(RESOURCE_ROOT / "crazyones.pdf").pages[0])
 
     writer.update_page_form_field_values(
         writer.pages[0], {"foo": "some filled in text"}, flags=1
+    )
+
+    # check if no fields to fill in the page
+    writer.update_page_form_field_values(
+        writer.pages[1], {"foo": "some filled in text"}, flags=1
     )
 
     writer.update_page_form_field_values(
@@ -383,6 +389,8 @@ def test_fill_form():
     tmp_filename = "dont_commit_filled_pdf.pdf"
     with open(tmp_filename, "wb") as output_stream:
         writer.write(output_stream)
+
+    os.remove(tmp_filename)  # cleanup
 
 
 @pytest.mark.parametrize(
@@ -595,13 +603,17 @@ def test_io_streams():
 
 
 def test_regression_issue670():
+    tmp_file = "dont_commit_issue670.pdf"
     filepath = RESOURCE_ROOT / "crazyones.pdf"
     reader = PdfReader(filepath, strict=False)
     for _ in range(2):
         writer = PdfWriter()
         writer.add_page(reader.pages[0])
-        with open("dont_commit_issue670.pdf", "wb") as f_pdf:
+        with open(tmp_file, "wb") as f_pdf:
             writer.write(f_pdf)
+
+    # cleanup
+    os.remove(tmp_file)
 
 
 def test_issue301():
